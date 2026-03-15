@@ -1,0 +1,15 @@
+# Dataset pipeline
+datasets>=2.16.0
+huggingface_hub>=0.20.0
+
+# Google Cloud SDK
+google-genai>=1.0.0
+google-cloud-aiplatform>=1.40.0
+google-cloud-storage>=2.14.0
+
+# Data processing
+pandas>=2.1.0
+tqdm>=4.66.0
+
+# Utilities
+python-dotenv>=1.0.0

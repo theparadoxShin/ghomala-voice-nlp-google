@@ -1,0 +1,27 @@
+# Raw datasets (large HuggingFace downloads — re-downloadable via script 01)
+# data/raw/
+# Processed JSONL (re-generatable via script 02)
+# data/processed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Cloud credentials
+.gcloud/
+
+# Node/Mobile
+node_modules/
+.expo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,38 @@
+steps:
+  # Copy dictionary data into backend build context
+  - name: 'ubuntu'
+    args: ['bash', '-c', 'mkdir -p backend/data/dictionary && cp -r data/dictionary/* backend/data/dictionary/ 2>/dev/null || true']
+
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/nam-sa-backend', './backend']
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/nam-sa-backend']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'nam-sa'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/nam-sa-backend'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '300'
+      - '--set-env-vars'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1'
+
+images:
+  - 'gcr.io/$PROJECT_ID/nam-sa-backend'
