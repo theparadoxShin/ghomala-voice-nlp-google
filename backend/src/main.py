@@ -47,9 +47,9 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.agents.live_request_queue import LiveRequestQueue
 
-# Import our ADK agent
+# Import our ADK agent + dictionary tool
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from nam_sa_agent.agent import root_agent
+from nam_sa_agent.agent import root_agent, ghomala_dictionary_lookup
 
 logger = logging.getLogger("namsa")
 logging.basicConfig(level=logging.INFO)
@@ -166,6 +166,36 @@ class ChatResponse(BaseModel):
 
 
 # ============================================================================
+# DICTIONARY-AUGMENTED GENERATION (for REST text endpoints)
+# ============================================================================
+def _enrich_with_dictionary(user_message: str) -> str:
+    """Look up key words in the Ghomala' dictionary and return context."""
+    # Extract potential words to look up (strip common prefixes)
+    import re
+    msg = user_message.lower()
+    # Remove common question prefixes
+    for prefix in ["traduis", "comment dit-on", "comment dire", "translate",
+                   "how do you say", "how to say", "what is", "en ghomala",
+                   "in ghomala", "?", "'", '"']:
+        msg = msg.replace(prefix, "")
+    words = [w.strip(" .,;:!?") for w in msg.split() if len(w.strip()) > 2]
+
+    results = []
+    for word in words:
+        lookup = ghomala_dictionary_lookup(word, "translate")
+        if lookup.get("status") == "success":
+            results.append(lookup["results"])
+
+    if results:
+        return (
+            "CONTEXTE DU DICTIONNAIRE GHOMALA' (source fiable, utilise ces traductions):\n"
+            + "\n".join(results)
+            + "\n\nRéponds en utilisant les traductions du dictionnaire ci-dessus."
+        )
+    return ""
+
+
+# ============================================================================
 # IN-MEMORY CHAT HISTORY (for REST text endpoints)
 # ============================================================================
 _chat_history: dict[str, list] = {}
@@ -228,9 +258,16 @@ async def chat(request: ChatRequest):
             role=msg["role"],
             parts=[types.Part(text=msg["text"])]
         ))
+    # Enrich with dictionary lookups for accurate translations
+    dict_context = _enrich_with_dictionary(request.message)
+    enriched_msg = f"[Mode: {request.mode}] {instruction}\n\n"
+    if dict_context:
+        enriched_msg += f"{dict_context}\n\n"
+    enriched_msg += request.message
+
     contents.append(types.Content(
         role="user",
-        parts=[types.Part(text=f"[Mode: {request.mode}] {instruction}\n\n{request.message}")]
+        parts=[types.Part(text=enriched_msg)]
     ))
 
     try:
@@ -266,7 +303,10 @@ async def translate(request: TranslateRequest):
     src = lang_map.get(request.source_lang, request.source_lang)
     tgt = lang_map.get(request.target_lang, request.target_lang)
 
+    dict_context = _enrich_with_dictionary(request.text)
     prompt = f"Traduis de {src} vers {tgt}: {request.text}"
+    if dict_context:
+        prompt = f"{dict_context}\n\n{prompt}"
     try:
         response = client.models.generate_content(
             model=GEMINI_TUNED_MODEL,

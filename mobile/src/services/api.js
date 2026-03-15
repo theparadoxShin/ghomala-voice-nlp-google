@@ -8,8 +8,8 @@
  */
 import Constants from 'expo-constants';
 
-// Cloud Run URL — set after deploying with: ./deploy.sh
-const PROD_URL = 'https://nam-sa-XXXXX-uc.a.run.app';
+// Cloud Run URL — deployed backend
+const PROD_URL = 'https://nam-sa-976647416990.us-central1.run.app';
 
 const API_BASE = __DEV__
   ? (Constants.expoConfig?.extra?.API_URL || 'http://192.168.1.100:8080')

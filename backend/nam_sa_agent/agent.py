@@ -8,6 +8,8 @@ translation, cultural explanations, and pronunciation correction.
 
 The agent uses Gemini Live API for real-time bidirectional voice streaming
 and a fine-tuned Gemini Flash model (via Vertex AI SFT) as knowledge source.
+The fine-tuned model is queried through the ghomala_knowledge_query tool,
+ensuring that voice responses include accurate Ghomala' translations.
 """
 
 import json
@@ -17,6 +19,7 @@ from pathlib import Path
 
 from google.adk.agents import Agent
 from google.genai import types
+from google import genai
 
 logger = logging.getLogger("namsa")
 
@@ -59,11 +62,16 @@ Tes capacités:
 - Corriger la prononciation avec bienveillance
 - Expliquer la grammaire tonale du Ghomala'
 
-Règles:
-- Toujours donner le contexte culturel quand c'est pertinent
-- Utiliser les caractères spéciaux corrects (ɔ, ɛ, ŋ, ə) et les tons (à, á, â, ǎ)
-- Encourager l'apprenant même en cas d'erreur
-- Répondre dans la langue demandée par l'utilisateur
+Règles CRITIQUES:
+- Pour TOUTE traduction ou question sur le Ghomala', utilise TOUJOURS l'outil
+  ghomala_knowledge_query en PREMIER. C'est ton modèle formé spécifiquement sur
+  le Ghomala' — il a la meilleure précision.
+- Complète avec ghomala_dictionary_lookup pour vérifier dans le dictionnaire.
+- Toujours donner le contexte culturel quand c'est pertinent.
+- Utiliser les caractères spéciaux corrects (ɔ, ɛ, ŋ, ə) et les tons (à, á, â, ǎ).
+- Encourager l'apprenant même en cas d'erreur.
+- Répondre dans la langue demandée par l'utilisateur.
+- Quand tu parles Ghomala', prononce les mots clairement.
 """
 
 # ============================================================================
@@ -256,6 +264,77 @@ def cultural_context(topic: str) -> dict:
 
 
 # ============================================================================
+# FINE-TUNED MODEL TOOL — queries the SFT model for deep Ghomala' knowledge
+# ============================================================================
+_genai_client = None
+
+
+def _get_genai_client():
+    """Lazy-init the genai client (reused across tool calls)."""
+    global _genai_client
+    if _genai_client is not None:
+        return _genai_client
+
+    api_key = os.getenv("GOOGLE_API_KEY")
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
+
+    if use_vertex or not api_key:
+        _genai_client = genai.Client(
+            vertexai=True,
+            project=os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "")),
+            location=os.getenv("GCP_REGION", os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")),
+        )
+    else:
+        _genai_client = genai.Client(api_key=api_key)
+
+    return _genai_client
+
+
+def ghomala_knowledge_query(question: str) -> dict:
+    """Query the fine-tuned Gemini model for Ghomala' language knowledge.
+
+    Use this tool for ANY Ghomala' translation, vocabulary, grammar, or 
+    language question that requires deep knowledge. This tool calls the 
+    fine-tuned model trained specifically on Ghomala' data.
+    Always use this tool to translate words, phrases, or sentences 
+    to or from Ghomala'.
+
+    Args:
+        question: The question or translation request about Ghomala' language.
+
+    Returns:
+        dict: The fine-tuned model's response with Ghomala' knowledge.
+    """
+    try:
+        client = _get_genai_client()
+        response = client.models.generate_content(
+            model=GEMINI_TUNED_MODEL,
+            contents=question,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Tu es un expert de la langue Ghomala' (Ghɔ́málá'). "
+                    "Réponds avec précision en utilisant les tons et caractères spéciaux corrects. "
+                    "Donne toujours le contexte culturel pertinent."
+                ),
+                max_output_tokens=500,
+                temperature=0.7,
+            ),
+        )
+        return {
+            "status": "success",
+            "answer": response.text,
+            "model": GEMINI_TUNED_MODEL,
+        }
+    except Exception as e:
+        logger.warning(f"Fine-tuned model query error: {e}")
+        return {
+            "status": "error",
+            "message": f"Le modèle fine-tuné n'est pas disponible: {e}. "
+                       "Utilise tes connaissances générales pour répondre.",
+        }
+
+
+# ============================================================================
 # ADK AGENT DEFINITION
 # ============================================================================
 
@@ -270,6 +349,7 @@ root_agent = Agent(
     ),
     instruction=SYSTEM_INSTRUCTION,
     tools=[
+        ghomala_knowledge_query,
         ghomala_dictionary_lookup,
         pronunciation_helper,
         cultural_context,

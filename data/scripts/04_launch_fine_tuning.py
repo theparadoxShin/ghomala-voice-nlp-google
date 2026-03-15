@@ -39,7 +39,8 @@ import argparse
 import time
 from datetime import datetime
 
-from google.cloud import aiplatform
+import vertexai
+from vertexai.tuning import sft
 
 # ============================================================================
 # CONFIGURATION
@@ -53,7 +54,7 @@ TRAIN_GCS_URI = f"gs://{BUCKET_NAME}/{GCS_PREFIX}/train.jsonl"
 VAL_GCS_URI = f"gs://{BUCKET_NAME}/{GCS_PREFIX}/val.jsonl"
 
 # Base model for SFT
-BASE_MODEL = "gemini-2.5-flash-001"
+BASE_MODEL = "gemini-2.5-flash"
 
 
 # ============================================================================
@@ -83,12 +84,12 @@ def launch_sft_job(project_id: str):
     print(f"   Region:        {GCP_REGION}")
 
     # Initialize Vertex AI
-    aiplatform.init(project=project_id, location=GCP_REGION)
+    vertexai.init(project=project_id, location=GCP_REGION)
 
     try:
-        sft_tuning_job = aiplatform.TuningJob.create(
+        sft_tuning_job = sft.train(
             source_model=BASE_MODEL,
-            training_dataset=TRAIN_GCS_URI,
+            train_dataset=TRAIN_GCS_URI,
             validation_dataset=VAL_GCS_URI,
             tuned_model_display_name=display_name,
             epochs=3,
@@ -121,7 +122,7 @@ def monitor_job(tuning_job):
     print(f"   Console: https://console.cloud.google.com/vertex-ai/tuning\n")
 
     while True:
-        tuning_job.refresh()
+        tuning_job = sft.SupervisedTuningJob(tuning_job.resource_name)
         state = tuning_job.state.name if hasattr(tuning_job.state, 'name') else str(tuning_job.state)
 
         timestamp = datetime.now().strftime("%H:%M:%S")

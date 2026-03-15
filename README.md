@@ -145,6 +145,50 @@ npx expo start
 
 **Supported base models:** Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, Gemini 2.5 Pro
 
+### Post Fine-Tuning: Deploy the Tuned Model
+
+Once the Vertex AI SFT job completes, retrieve the tuned model endpoint and update Cloud Run:
+
+```bash
+# Check fine-tuning job status (via Python SDK — gcloud CLI doesn't support tuning-jobs)
+python -c "
+from google import genai
+client = genai.Client(vertexai=True, project='nam-sa-ghomala', location='us-central1')
+for job in client.tunings.list():
+    print(f'{job.name} | {job.state} | {job.tuned_model_display_name}')
+    if job.tuned_model:
+        print(f'  → endpoint: {job.tuned_model.endpoint}')
+        print(f'  → model:    {job.tuned_model.model}')
+"
+
+# Get details of a specific job
+python -c "
+from google import genai
+client = genai.Client(vertexai=True, project='nam-sa-ghomala', location='us-central1')
+job = client.tunings.get(name='projects/976647416990/locations/us-central1/tuningJobs/JOB_ID')
+print(f'State: {job.state}')
+print(f'Endpoint: {job.tuned_model.endpoint}')
+"
+
+# Update Cloud Run with the fine-tuned model endpoint
+gcloud run services update nam-sa \
+  --update-env-vars "GEMINI_TUNED_MODEL=projects/976647416990/locations/us-central1/endpoints/ENDPOINT_ID" \
+  --region us-central1 \
+  --project nam-sa-ghomala
+
+# Test the fine-tuned model
+python data/scripts/04_launch_fine_tuning.py --mode test \
+  --endpoint projects/976647416990/locations/us-central1/endpoints/ENDPOINT_ID \
+  --project nam-sa-ghomala
+```
+
+**What we did:**
+- SFT Job `936727952031219712` completed successfully on `gemini-2.5-flash`
+- Tuned model endpoint: `projects/976647416990/locations/us-central1/endpoints/8281311023932112896`
+- Cloud Run updated: `gcloud run services update nam-sa --update-env-vars "GEMINI_TUNED_MODEL=projects/976647416990/locations/us-central1/endpoints/8281311023932112896" --region us-central1 --project nam-sa-ghomala`
+
+The `GEMINI_TUNED_MODEL` env var is used by both the REST text endpoints and the ADK agent's `ghomala_knowledge_query` tool. Once updated, all voice and text responses leverage the fine-tuned Ghomala' knowledge.
+
 See [docs/fine-tuning/SFT_explained.md](docs/fine-tuning/SFT_explained.md) for details.
 
 ---

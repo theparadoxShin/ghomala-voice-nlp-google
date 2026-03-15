@@ -34,7 +34,7 @@
       "favicon": "./assets/logo.png"
     },
     "extra": {
-      "API_URL": ""
+      "API_URL": "https://nam-sa-976647416990.us-central1.run.app"
     },
     "plugins": [
       [
