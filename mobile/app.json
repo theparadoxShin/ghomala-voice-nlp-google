@@ -28,7 +28,8 @@
       "package": "com.daemoncraft.namsa",
       "permissions": [
         "RECORD_AUDIO"
-      ]
+      ],
+      "newArchEnabled": true
     },
     "web": {
       "favicon": "./assets/logo.png"
