@@ -164,6 +164,10 @@ class ChatResponse(BaseModel):
     mode: str
     timestamp: str
 
+class TTSRequest(BaseModel):
+    text: str
+    language: str = "fr"  # fr, en, or bbj (Ghomala')
+
 
 # ============================================================================
 # DICTIONARY-AUGMENTED GENERATION (for REST text endpoints)
@@ -216,6 +220,7 @@ async def root():
         "endpoints": {
             "chat": "/api/chat",
             "translate": "/api/translate",
+            "tts": "/api/tts",
             "voice": "/ws/voice",
             "live": "/ws/live",
             "health": "/health",
@@ -325,6 +330,63 @@ async def translate(request: TranslateRequest):
         }
     except Exception as e:
         logger.error(f"Translate error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# TTS — Text-to-Speech using Gemini multimodal
+# ============================================================================
+@app.post("/api/tts")
+async def text_to_speech(request: TTSRequest):
+    """Generate speech audio from text using Gemini's audio generation.
+
+    Uses Gemini to produce natural speech with correct tonal pronunciation
+    for Ghomala', French, and English.
+    """
+    lang_label = {"fr": "French", "en": "English", "bbj": "Ghomala'"}.get(
+        request.language, "French"
+    )
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"Read this text aloud in {lang_label}. "
+                     f"Pronounce clearly with correct tones and intonation: "
+                     f"{request.text}",
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name="Kore",
+                        )
+                    )
+                ),
+            ),
+        )
+
+        # Extract audio data from the response
+        if (
+            response.candidates
+            and response.candidates[0].content
+            and response.candidates[0].content.parts
+        ):
+            for part in response.candidates[0].content.parts:
+                if part.inline_data and part.inline_data.data:
+                    audio_b64 = base64.b64encode(part.inline_data.data).decode("utf-8")
+                    return {
+                        "audio": audio_b64,
+                        "mime_type": part.inline_data.mime_type or "audio/wav",
+                        "text": request.text,
+                        "language": request.language,
+                    }
+
+        raise HTTPException(status_code=500, detail="No audio generated")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -156,7 +156,7 @@ export default function HomeScreen({ navigation }) {
 
           {/* Logo */}
           <Image
-            source={require('../../assets/logo.png')}
+            source={require('../../assets/playstore.png')}
             style={styles.logo}
             resizeMode="contain"
           />

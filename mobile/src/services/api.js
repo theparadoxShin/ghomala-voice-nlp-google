@@ -62,6 +62,26 @@ export async function checkHealth() {
   return response.json();
 }
 
+/**
+ * Text-to-Speech — returns base64 audio for a given text.
+ * @param {string} text - Text to speak
+ * @param {string} language - 'fr', 'en', or 'bbj' (Ghomala')
+ * @returns {{ audio: string, mime_type: string }} base64-encoded audio
+ */
+export async function fetchTTS(text, language = 'fr') {
+  const response = await fetch(`${API_BASE}/api/tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, language }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`TTS API error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 
 // ============================================================================
 // WEBSOCKET — Voice Streaming
