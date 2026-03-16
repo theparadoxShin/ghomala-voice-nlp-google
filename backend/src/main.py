@@ -434,23 +434,22 @@ async def translate(request: TranslateRequest):
             )
             result_text = response.text.strip()
 
-            # Clean model hallucinations — if response contains explanations, extract just the translation
-            for noise in [
-                "The provided dictionary", "Le dictionnaire", "Je ne peux pas",
-                "I cannot", "I don't have", "Il n'y a pas", "Malheureusement",
-                "Unfortunately", "Note:", "Remarque:",
-            ]:
-                if noise.lower() in result_text.lower():
-                    # Try to extract a Ghomala'-like word (with diacritics) from the noise
-                    import re
-                    ghomala_words = re.findall(r'[A-Za-zɔɛŋəʉÀ-ÿ\u0300-\u036f]+', result_text)
-                    # Filter for words with special chars typical of Ghomala'
-                    special = [w for w in ghomala_words if any(c in w for c in 'ɔɛŋəʉ') or len(w) > 2]
-                    if special:
-                        result_text = ' '.join(special[:5])
-                    else:
-                        result_text = "?"
-                    break
+            # Only clean obvious hallucinations (long explanations instead of short translations)
+            if len(result_text) > 60:
+                for noise in [
+                    "The provided dictionary", "Le dictionnaire", "Je ne peux pas",
+                    "I cannot", "I don't have", "Il n'y a pas", "Malheureusement",
+                    "Unfortunately",
+                ]:
+                    if noise.lower() in result_text.lower():
+                        # Try to extract a Ghomala'-like word from the noise
+                        import re
+                        ghomala_words = re.findall(r'[\w\u0250-\u02AF\u0300-\u036f]+', result_text)
+                        special = [w for w in ghomala_words if any(c in w for c in 'ɔɛŋəʉ')]
+                        if special:
+                            result_text = ' '.join(special[:5])
+                        # else keep the raw model response — better than "?"
+                        break
 
             return {
                 "original": request.text,
