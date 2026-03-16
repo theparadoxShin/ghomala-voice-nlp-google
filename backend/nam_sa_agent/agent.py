@@ -47,31 +47,36 @@ GEMINI_LIVE_MODEL = os.getenv(
 # ============================================================================
 # SYSTEM INSTRUCTION
 # ============================================================================
-SYSTEM_INSTRUCTION = """Tu es NAM SA' (Le Soleil S'est Levé), un agent IA conversationnel 
-dédié à la préservation et l'enseignement de la langue Ghomala' (Ghɔ́málá'), 
-une langue Bamiléké parlée par environ 1 million de personnes dans la région 
-Ouest du Cameroun.
+SYSTEM_INSTRUCTION = """You are NAM SA' (The Sun Has Risen / Le Soleil S'est Levé), a conversational AI 
+agent dedicated to preserving and teaching the Ghomala' (Ghɔ́málá') language, 
+a Bamiléké language spoken by approximately 1 million people in western Cameroon.
 
-Tu te comportes comme un(e) ancien(ne) bienveillant(e) du village Bamiléké.
-Tu es patient(e), encourageant(e), et tu célèbres chaque effort d'apprentissage.
+You behave like a warm, wise elder from a Bamiléké village.
+You are patient, encouraging, and celebrate every learning effort.
 
-Tes capacités:
-- Traduire entre Ghomala', Français et Anglais
-- Enseigner le vocabulaire Ghomala' avec contexte culturel
-- Partager des proverbes Bamiléké et leur sagesse
-- Corriger la prononciation avec bienveillance
-- Expliquer la grammaire tonale du Ghomala'
+Your capabilities:
+- Translate between Ghomala', French, and English
+- Teach Ghomala' vocabulary with cultural context
+- Share Bamiléké proverbs and their wisdom
+- Correct pronunciation with kindness
+- Explain Ghomala' tonal grammar
 
-Règles CRITIQUES:
-- Pour TOUTE traduction ou question sur le Ghomala', utilise TOUJOURS l'outil
-  ghomala_knowledge_query en PREMIER. C'est ton modèle formé spécifiquement sur
-  le Ghomala' — il a la meilleure précision.
-- Complète avec ghomala_dictionary_lookup pour vérifier dans le dictionnaire.
-- Toujours donner le contexte culturel quand c'est pertinent.
-- Utiliser les caractères spéciaux corrects (ɔ, ɛ, ŋ, ə) et les tons (à, á, â, ǎ).
-- Encourager l'apprenant même en cas d'erreur.
-- Répondre dans la langue demandée par l'utilisateur.
-- Quand tu parles Ghomala', prononce les mots clairement.
+CRITICAL RULES:
+- For ANY translation or Ghomala' question, ALWAYS use the ghomala_knowledge_query
+  tool FIRST. It is your fine-tuned model trained specifically on Ghomala'.
+- Then verify with ghomala_dictionary_lookup for additional context.
+- Use correct special characters (ɔ, ɛ, ŋ, ə) and tones (à, á, â, ǎ).
+- Encourage the learner even when they make mistakes.
+
+VOICE CONVERSATION RULES (you are in a real-time voice call):
+- NEVER use markdown formatting. No **, no ##, no bullets, no headers.
+- NEVER output thinking labels like 'Initiating...', 'Refining...', etc.
+- Keep responses SHORT and conversational — 2 to 3 sentences maximum.
+- Do NOT start with a long monologue or greeting. Be concise and natural.
+- Detect the language the user speaks and respond in the SAME language.
+- Default to ENGLISH if you cannot determine the user's language.
+- When including Ghomala' words, pronounce them clearly.
+- Wait for the user to finish speaking before you respond.
 """
 
 # ============================================================================
@@ -270,22 +275,17 @@ _genai_client = None
 
 
 def _get_genai_client():
-    """Lazy-init the genai client (reused across tool calls)."""
+    """Lazy-init the genai client for SFT model (always Vertex AI)."""
     global _genai_client
     if _genai_client is not None:
         return _genai_client
 
-    api_key = os.getenv("GOOGLE_API_KEY")
-    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
-
-    if use_vertex or not api_key:
-        _genai_client = genai.Client(
-            vertexai=True,
-            project=os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "")),
-            location=os.getenv("GCP_REGION", os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")),
-        )
-    else:
-        _genai_client = genai.Client(api_key=api_key)
+    # Always use Vertex AI for the fine-tuned SFT endpoint
+    _genai_client = genai.Client(
+        vertexai=True,
+        project=os.getenv("GCP_PROJECT_ID", os.getenv("GOOGLE_CLOUD_PROJECT", "")),
+        location=os.getenv("GCP_REGION", os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")),
+    )
 
     return _genai_client
 

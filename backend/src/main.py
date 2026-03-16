@@ -109,19 +109,20 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting NAM SA' server...")
 
-    api_key = os.getenv("GOOGLE_API_KEY")
-    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
+    # REST endpoints always use Vertex AI (for SFT v2 endpoint access)
+    # ADK Runner uses GOOGLE_API_KEY for Google AI Studio Live API
+    client = genai.Client(
+        vertexai=True,
+        project=GCP_PROJECT_ID,
+        location=GCP_REGION,
+    )
+    logger.info(f"Vertex AI client ready ({GCP_PROJECT_ID}/{GCP_REGION})")
 
-    if use_vertex or not api_key:
-        client = genai.Client(
-            vertexai=True,
-            project=GCP_PROJECT_ID,
-            location=GCP_REGION,
-        )
-        logger.info(f"Vertex AI client ready ({GCP_PROJECT_ID}/{GCP_REGION})")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        logger.info("GOOGLE_API_KEY set — ADK will use Google AI Studio for Live API")
     else:
-        client = genai.Client(api_key=api_key)
-        logger.info("Google AI client ready (API key)")
+        logger.warning("GOOGLE_API_KEY not set — ADK Live API may fail on Vertex AI")
 
     logger.info(f"ADK Runner ready (agent: {root_agent.name}, model: {root_agent.model})")
 
@@ -559,24 +560,93 @@ async def text_to_speech(request: TTSRequest):
 
 
 # ============================================================================
-# WEBSOCKET — Voice Conversation (Multimodal Gemini + Cloud TTS)
+# AUDIO FORMAT CONVERSION — M4A/AAC ↔ PCM (for Gemini Live API)
+# ============================================================================
+
+def _convert_audio_to_pcm(audio_bytes: bytes, mime_type: str = "audio/mp4") -> bytes:
+    """Convert audio (M4A/AAC/MP3/WAV) to raw PCM 16kHz mono 16-bit.
+    Required because Gemini Live API only accepts audio/pcm;rate=16000."""
+    from pydub import AudioSegment
+    import io
+
+    fmt_map = {
+        "audio/mp4": "mp4", "audio/m4a": "mp4", "audio/aac": "aac",
+        "audio/mpeg": "mp3", "audio/mp3": "mp3",
+        "audio/wav": "wav", "audio/x-wav": "wav",
+        "audio/webm": "webm", "audio/ogg": "ogg",
+    }
+    fmt = fmt_map.get(mime_type, "mp4")
+
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format=fmt)
+    audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+    return audio.raw_data
+
+
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
+    """Convert raw PCM bytes to WAV format (adds 44-byte header)."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_bytes)
+    return buf.getvalue()
+
+
+def _clean_transcript(text: str) -> str:
+    """Remove markdown thinking headers from model transcripts.
+    E.g. '**Initiating A Dialogue**\n\nHello!' → 'Hello!'"""
+    import re
+    text = re.sub(r'\*\*[^*]+\*\*\s*', '', text)
+    return text.strip()
+
+
+# ============================================================================
+# WEBSOCKET — ADK Live Voice (Gemini Live API — Bidirectional Streaming)
 # ============================================================================
 
 async def _handle_live_voice(websocket: WebSocket):
-    """Real-time voice conversation using multimodal Gemini + Cloud TTS.
+    """Real-time bidirectional voice conversation using ADK + Gemini Live API.
 
-    Flow per turn:
-      1. Mobile sends recorded audio over WebSocket
-      2. Gemini Flash transcribes the audio
-      3. Tuned model generates a response (with dictionary enrichment)
-      4. Cloud TTS generates audio for the response
-      5. Transcript + audio sent back to mobile
+    Architecture (following Google's Way Back Home Codelab pattern):
+      - LiveRequestQueue buffers audio from client
+      - Runner.run_live() streams audio to Gemini Live API
+      - Gemini native audio model processes speech + calls tools (dictionary, SFT model)
+      - Model responds with audio (voice) + transcription
+      - Audio is converted to WAV and sent back to mobile client
+
+    This replaces the old manual STT → LLM → TTS pipeline with true
+    bidirectional streaming. The model handles turn detection internally.
     """
     await websocket.accept()
+    user_id = str(uuid.uuid4())
     session_id = str(uuid.uuid4())
-    chat_history: list[dict] = []
+    language = "fr"
+    sid = session_id[:8]
 
-    logger.info(f"Live voice session started: {session_id}")
+    logger.info(f"ADK Live session started: {session_id}")
+
+    # -- Phase 1: Session Setup --
+    session = await session_service.get_session(
+        app_name=APP_NAME, user_id=user_id, session_id=session_id
+    )
+    if not session:
+        await session_service.create_session(
+            app_name=APP_NAME, user_id=user_id, session_id=session_id
+        )
+
+    # -- Phase 2: RunConfig for native audio model --
+    run_config = RunConfig(
+        streaming_mode=StreamingMode.BIDI,
+        response_modalities=["AUDIO"],
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
+    live_request_queue = LiveRequestQueue()
 
     await websocket.send_json({
         "type": "status",
@@ -584,150 +654,164 @@ async def _handle_live_voice(websocket: WebSocket):
         "session_id": session_id,
     })
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            msg = json.loads(data)
-            logger.info(f"[{session_id[:8]}] Received message type: {msg.get('type')}, size: {len(data)} bytes")
+    # -- Phase 3: Concurrent bidirectional streaming --
 
-            if msg.get("type") == "audio":
-                audio_bytes = base64.b64decode(msg["data"])
-                mime_type = msg.get("mime_type", "audio/mp4")
-                logger.info(f"[{session_id[:8]}] Audio received: {len(audio_bytes)} bytes, mime: {mime_type}")
+    async def upstream_task():
+        """Receive audio/config from mobile → feed to LiveRequestQueue."""
+        nonlocal language
+        try:
+            while True:
+                data = await websocket.receive_text()
+                msg = json.loads(data)
 
-                try:
-                    # ── Step 1: Transcribe audio ──
-                    logger.info(f"[{session_id[:8]}] Step 1: Transcribing audio...")
-                    transcribe_response = client.models.generate_content(
-                        model="gemini-2.5-flash",
-                        contents=[types.Content(
-                            role="user",
-                            parts=[
-                                types.Part(inline_data=types.Blob(
-                                    data=audio_bytes, mime_type=mime_type,
-                                )),
-                                types.Part(text=(
-                                    "Transcris exactement ce que l'utilisateur dit "
-                                    "dans cet audio. Donne UNIQUEMENT la transcription, "
-                                    "rien d'autre. Pas de guillemets."
-                                )),
-                            ]
-                        )],
-                        config=types.GenerateContentConfig(
-                            max_output_tokens=200,
-                            temperature=0.1,
-                        ),
-                    )
-                    user_text = transcribe_response.text.strip().strip('"').strip("'")
-                    logger.info(f"[{session_id[:8]}] Transcription: '{user_text}'")
+                if msg.get("type") == "config":
+                    language = msg.get("language", "fr")
+                    logger.info(f"[{sid}] Config: lang={language}")
+                    # Don't send a greeting — wait for user to speak first.
+                    # The agent's system instruction handles language detection.
 
-                    if not user_text:
-                        logger.warning(f"[{session_id[:8]}] Empty transcription, skipping")
-                        await websocket.send_json({"type": "turn_complete"})
-                        continue
+                elif msg.get("type") == "audio":
+                    audio_bytes = base64.b64decode(msg["data"])
+                    mime = msg.get("mime_type", "audio/mp4")
+                    logger.info(f"[{sid}] Audio received: {len(audio_bytes)} bytes, mime={mime}")
 
-                    # Send user transcript to mobile
-                    await websocket.send_json({
-                        "type": "user_transcript",
-                        "text": user_text,
-                    })
-                    chat_history.append({"role": "user", "text": user_text})
-
-                    # ── Step 2: Generate response with dictionary enrichment ──
-                    logger.info(f"[{session_id[:8]}] Step 2: Generating response...")
-                    dict_context = _enrich_with_dictionary(user_text)
-                    enriched = ""
-                    if dict_context:
-                        enriched = f"{dict_context}\n\n"
-                    enriched += user_text
-
-                    contents = []
-                    for h in chat_history[-8:]:
-                        contents.append(types.Content(
-                            role=h["role"],
-                            parts=[types.Part(text=h["text"])]
-                        ))
-                    # Replace last entry with enriched version
-                    if contents:
-                        contents[-1] = types.Content(
-                            role="user",
-                            parts=[types.Part(text=enriched)]
-                        )
-
-                    response = client.models.generate_content(
-                        model=GEMINI_TUNED_MODEL,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            max_output_tokens=500,
-                            temperature=0.7,
-                        ),
-                    )
-                    assistant_text = response.text.strip()
-                    logger.info(f"[{session_id[:8]}] Response: '{assistant_text[:100]}...'")
-
-                    # Send assistant response text
-                    await websocket.send_json({
-                        "type": "transcript",
-                        "text": assistant_text,
-                        "role": "assistant",
-                    })
-                    chat_history.append({"role": "model", "text": assistant_text})
-
-                    # ── Step 3: Generate TTS audio (Chirp 3 HD) ──
-                    logger.info(f"[{session_id[:8]}] Step 3: Generating TTS audio (Chirp 3 HD)...")
                     try:
-                        from google.cloud import texttospeech as tts_lib
-                        tts = _get_tts_client()
-
-                        lang_code, voice_name = CHIRP3_VOICES["fr"]
-
-                        synthesis_input = tts_lib.SynthesisInput(text=assistant_text)
-                        voice = tts_lib.VoiceSelectionParams(
-                            language_code=lang_code, name=voice_name,
+                        # Convert M4A/AAC → raw PCM 16kHz mono 16-bit
+                        pcm_data = await asyncio.to_thread(
+                            _convert_audio_to_pcm, audio_bytes, mime
                         )
-                        audio_config = tts_lib.AudioConfig(
-                            audio_encoding=tts_lib.AudioEncoding.MP3,
+                        audio_blob = types.Blob(
+                            mime_type="audio/pcm;rate=16000",
+                            data=pcm_data,
                         )
-                        tts_response = tts.synthesize_speech(
-                            input=synthesis_input, voice=voice,
-                            audio_config=audio_config,
-                        )
-
-                        audio_b64 = base64.b64encode(
-                            tts_response.audio_content
-                        ).decode("utf-8")
+                        live_request_queue.send_realtime(audio_blob)
+                        logger.info(f"[{sid}] PCM fed to queue: {len(pcm_data)} bytes")
+                    except Exception as conv_err:
+                        logger.error(f"[{sid}] Audio conversion error: {conv_err}")
                         await websocket.send_json({
-                            "type": "audio_response",
-                            "data": audio_b64,
-                            "format": "mp3",
+                            "type": "error",
+                            "message": "Audio format error",
                         })
-                        logger.info(f"[{session_id[:8]}] Audio response sent: {len(audio_b64)} chars b64")
-                    except Exception as tts_err:
-                        logger.warning(f"[{session_id[:8]}] TTS in live session: {tts_err}")
 
-                    await websocket.send_json({"type": "turn_complete"})
-                    logger.info(f"[{session_id[:8]}] Turn complete")
+                elif msg.get("type") == "text":
+                    text = msg.get("text", "")
+                    if text:
+                        live_request_queue.send_content(
+                            types.Content(parts=[types.Part(text=text)])
+                        )
 
+                elif msg.get("type") == "stop":
+                    break
+
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"[{sid}] Upstream error: {e}")
+
+    async def downstream_task():
+        """Receive events from Runner.run_live() → send to mobile."""
+        audio_buffer = bytearray()
+        transcript_text = ""
+
+        try:
+            async for event in runner.run_live(
+                user_id=user_id,
+                session_id=session_id,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
+            ):
+                try:
+                    # -- User input transcription --
+                    input_tr = getattr(event, "input_audio_transcription", None)
+                    if input_tr:
+                        final = getattr(input_tr, "final_transcript", None)
+                        if final:
+                            logger.info(f"[{sid}] USER: {final}")
+                            await websocket.send_json({
+                                "type": "user_transcript",
+                                "text": final,
+                            })
+
+                    # -- Model output transcription --
+                    output_tr = getattr(event, "output_audio_transcription", None)
+                    if output_tr:
+                        final = getattr(output_tr, "final_transcript", None)
+                        if final:
+                            transcript_text = final
+                            logger.info(f"[{sid}] NAM SA': {final}")
+
+                    # -- Tool calls (logged for debugging) --
+                    if hasattr(event, "tool_call") and event.tool_call:
+                        logger.info(f"[{sid}] Tool call: {event.tool_call}")
+
+                    # -- Audio + text content --
+                    has_audio = False
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, "inline_data") and part.inline_data:
+                                if part.inline_data.data:
+                                    audio_buffer.extend(part.inline_data.data)
+                                    has_audio = True
+                            if hasattr(part, "text") and part.text:
+                                if not transcript_text:
+                                    transcript_text = part.text
+
+                    # -- Detect turn completion --
+                    is_turn_complete = False
+                    if getattr(event, "turn_complete", False):
+                        is_turn_complete = True
+                    if not is_turn_complete:
+                        try:
+                            raw = json.loads(
+                                event.model_dump_json(exclude_none=True, by_alias=True)
+                            )
+                            sc = raw.get("serverContent", raw.get("server_content", {})) or {}
+                            if sc.get("turnComplete", sc.get("turn_complete", False)):
+                                is_turn_complete = True
+                        except Exception:
+                            pass
+
+                    # -- Flush on turn complete --
+                    if is_turn_complete:
+                        if transcript_text:
+                            cleaned = _clean_transcript(transcript_text)
+                            if cleaned:
+                                await websocket.send_json({
+                                    "type": "transcript",
+                                    "text": cleaned,
+                                })
+                            transcript_text = ""
+
+                        if audio_buffer:
+                            wav_data = _pcm_to_wav(bytes(audio_buffer))
+                            audio_buffer = bytearray()
+                            await websocket.send_json({
+                                "type": "audio_response",
+                                "data": base64.b64encode(wav_data).decode(),
+                                "format": "wav",
+                            })
+
+                        await websocket.send_json({"type": "turn_complete"})
+
+                except WebSocketDisconnect:
+                    break
                 except Exception as e:
-                    logger.error(f"[{session_id[:8]}] Live voice processing error: {e}", exc_info=True)
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": str(e),
-                    })
-                    await websocket.send_json({"type": "turn_complete"})
+                    logger.warning(f"[{sid}] Event error: {e}")
 
-            elif msg.get("type") == "config":
-                logger.info(f"[{session_id[:8]}] Config received: {msg}")
-                pass
+        except Exception as e:
+            logger.error(f"[{sid}] Downstream error: {e}")
 
-            elif msg.get("type") == "stop":
-                break
-
+    # Run both tasks concurrently (full-duplex)
+    try:
+        await asyncio.gather(upstream_task(), downstream_task())
     except WebSocketDisconnect:
-        pass
+        logger.info(f"[{sid}] Client disconnected")
+    except Exception as e:
+        logger.error(f"[{sid}] Session error: {e}")
     finally:
-        logger.info(f"Live voice session ended: {session_id}")
+        # -- Phase 4: Cleanup --
+        live_request_queue.close()
+        logger.info(f"ADK Live session ended: {session_id}")
 
 
 # ============================================================================
@@ -859,7 +943,7 @@ async def voice_stream(websocket: WebSocket):
 
 @app.websocket("/ws/live")
 async def live_stream(websocket: WebSocket):
-    """Voice conversation endpoint — multimodal Gemini + Cloud TTS."""
+    """ADK Live Voice — bidirectional streaming via Gemini Live API."""
     await _handle_live_voice(websocket)
 
 

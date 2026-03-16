@@ -45,6 +45,7 @@ const RECORDING_OPTIONS = {
 const SILENCE_THRESHOLD = -35;       // dB — below this is "silence"
 const SILENCE_DURATION_MS = 1800;    // ms of silence before auto-send
 const MIN_RECORDING_MS = 800;        // ignore very short recordings
+const MAX_RECORDING_MS = 6000;       // force auto-send after 6s (fallback if metering is null)
 
 const STATES = {
   IDLE: 'idle',
@@ -72,6 +73,7 @@ export default function LiveScreen({ navigation }) {
   const silenceStartRef = useRef(null);
   const conversationActiveRef = useRef(false);
   const autoRestartRef = useRef(false);
+  const audioReceivedRef = useRef(false);
 
   // Keep refs in sync with state
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -85,12 +87,23 @@ export default function LiveScreen({ navigation }) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const waveAnim = useRef(new Animated.Value(0)).current;
 
-  // ── Silence Detection via Metering ──
+  // ── Silence Detection via Metering + Timer Fallback ──
   useEffect(() => {
     if (statusRef.current !== STATES.LISTENING) {
       silenceStartRef.current = null;
       return;
     }
+
+    // Timer fallback: force auto-send after MAX_RECORDING_MS
+    // This ensures audio is ALWAYS sent even if metering is null
+    if (recorderState.durationMillis >= MAX_RECORDING_MS) {
+      console.log('[Live] Max recording time reached, auto-sending...');
+      silenceStartRef.current = null;
+      autoRestartRef.current = true;
+      stopAndSend();
+      return;
+    }
+
     if (recorderState.metering == null) return;
 
     const now = Date.now();
@@ -170,26 +183,29 @@ export default function LiveScreen({ navigation }) {
             }]);
             break;
 
-          case 'transcript':
-            setMessages(prev => [...prev, {
-              id: `a_${Date.now()}`, role: 'assistant', text: msg.text,
-            }]);
+          case 'transcript': {
+            const cleaned = (msg.text || '').replace(/\*\*[^*]+\*\*\s*/g, '').trim();
+            if (cleaned) {
+              setMessages(prev => [...prev, {
+                id: `a_${Date.now()}`, role: 'assistant', text: cleaned,
+              }]);
+            }
             break;
+          }
 
           case 'audio_response':
             setStatus(STATES.RESPONDING);
+            audioReceivedRef.current = true;
             playResponseAudio(msg.data, msg.format);
             break;
 
           case 'turn_complete':
-            if (autoRestartRef.current && conversationActiveRef.current) {
-              autoRestartRef.current = false;
-              setTimeout(() => {
-                if (conversationActiveRef.current && statusRef.current !== STATES.RESPONDING) {
-                  startListening();
-                }
-              }, 400);
+            // Only auto-restart if no audio was received (text-only turn).
+            // When audio exists, playback finish callback handles restart.
+            if (!audioReceivedRef.current && conversationActiveRef.current) {
+              setTimeout(() => startListening(), 300);
             }
+            audioReceivedRef.current = false;
             break;
 
           case 'error':

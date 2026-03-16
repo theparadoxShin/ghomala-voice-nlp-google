@@ -25,7 +25,7 @@ NAM SA' addresses this by building the **first AI voice agent** capable of teach
 | Screen | Description |
 |--------|-------------|
 | **🏠 Home** | Landing page with 4 mode cards, voice CTA, quick phrases |
-| **🎙️ Dialogue (Live)** | Real-time push-to-talk voice conversation via WebSocket (Gemini multimodal + Cloud TTS) |
+| **🎙️ Live Voice** | Real-time tap-to-talk voice conversation via WebSocket + Gemini Live API (ADK native audio streaming, auto turn detection) |
 | **💬 Chat** | Text-based conversation with the AI tutor |
 | **📖 Tuteur** | Structured vocabulary learning: 3 levels × 5 topics × ~5 words per topic, with on-demand Ghomala' translation & TTS |
 | **🌿 Proverbes** | Bamiléké proverbs with cultural explanations, Ghomala' TTS pronunciation |
@@ -116,14 +116,15 @@ nam-sa-google/
               └──────────────┘ └────────────┘ └─────────────┘
 ```
 
-### Voice Pipeline
+### Voice Pipeline (Live API — Bidirectional Streaming)
 
-1. **LiveScreen (Mobile)**: Push-to-talk → records audio (16kHz mono AAC) → reads as base64
-2. **WebSocket `/ws/live`**: Sends audio to FastAPI backend
-3. **Gemini 2.5 Flash**: Transcribes audio (multimodal)
-4. **SFT v2 Model**: Generates Ghomala'-enriched response (with dictionary augmentation)
-5. **Chirp 3 HD TTS**: Synthesizes natural speech with SSML prosody for tonal fidelity
-6. **Response**: Text transcript + MP3 audio sent back to mobile simultaneously
+1. **LiveScreen (Mobile)**: Tap-to-talk → records audio (16kHz mono AAC/M4A) → reads as base64
+2. **WebSocket `/ws/live`**: Sends audio to FastAPI backend via WebSocket
+3. **PCM Conversion**: Backend converts M4A/AAC → raw PCM 16kHz mono 16-bit (via pydub + ffmpeg)
+4. **ADK `Runner.run_live()`**: Feeds PCM to `LiveRequestQueue` → Gemini Live API (native audio model)
+5. **Gemini Live API**: Processes speech bidirectionally — handles turn detection, tool calling (dictionary, SFT model), and generates audio response
+6. **Response**: PCM audio converted to WAV + text transcript sent back to mobile simultaneously
+7. **Auto-restart**: Client plays WAV response, then automatically resumes recording for continuous conversation
 
 ### Key Services
 
@@ -406,8 +407,8 @@ python 04_launch_fine_tuning.py --mode sft
 | `POST` | `/api/chat` | Text conversation (SFT v2) |
 | `POST` | `/api/translate` | Translation FR ↔ Ghomala' ↔ EN (dictionary-first, model fallback, retry on 429) |
 | `POST` | `/api/tts` | TTS synthesis via Chirp 3 HD (SSML for Ghomala') |
-| `WS` | `/ws/live` | Push-to-talk voice conversation (Gemini multimodal + Chirp 3 HD) |
-| `WS` | `/ws/voice` | Bidirectional audio streaming (ADK + Gemini Live API) |
+| `WS` | `/ws/live` | **Primary voice endpoint** — ADK `Runner.run_live()` + Gemini Live API native audio streaming with automatic tool calling |
+| `WS` | `/ws/voice` | Legacy bidirectional audio streaming endpoint |
 
 ---
 
