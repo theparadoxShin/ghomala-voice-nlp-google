@@ -45,7 +45,8 @@
           "microphonePermission": "NAM SA' a besoin de ton micro pour les conversations en Ghomala'."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-localization"
     ]
   }
 }

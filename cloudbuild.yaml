@@ -5,11 +5,11 @@ steps:
 
   # Build the Docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/nam-sa-backend', './backend']
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/nam-sa-backend', './backend']
 
-  # Push to Container Registry
+  # Push to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/nam-sa-backend']
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/nam-sa-backend']
 
   # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -19,7 +19,7 @@ steps:
       - 'deploy'
       - 'nam-sa'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/nam-sa-backend'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/nam-sa-backend'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -32,7 +32,7 @@ steps:
       - '--timeout'
       - '300'
       - '--set-env-vars'
-      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,GEMINI_TUNED_MODEL=projects/976647416990/locations/us-central1/endpoints/3643166357693923328'
 
 images:
-  - 'gcr.io/$PROJECT_ID/nam-sa-backend'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/nam-sa-backend'
