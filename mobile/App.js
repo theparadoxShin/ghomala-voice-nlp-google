@@ -12,6 +12,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { LanguageProvider } from './src/context/LanguageContext';
 import HomeScreen from './src/screens/HomeScreen';
 import DictionaryScreen from './src/screens/DictionaryScreen';
+import LiveScreen from './src/screens/LiveScreen';
 import DialogueScreen from './src/screens/DialogueScreen';
 import ProverbsScreen from './src/screens/ProverbsScreen';
 import TutorScreen from './src/screens/TutorScreen';
@@ -35,9 +36,10 @@ export default function App() {
           <Stack.Screen name="Dictionary" component={DictionaryScreen} />
           <Stack.Screen
             name="Dialogue"
-            component={DialogueScreen}
+            component={LiveScreen}
             options={{ animation: 'slide_from_bottom' }}
           />
+          <Stack.Screen name="Chat" component={DialogueScreen} />
           <Stack.Screen name="Proverbs" component={ProverbsScreen} />
           <Stack.Screen name="Tutor" component={TutorScreen} />
         </Stack.Navigator>

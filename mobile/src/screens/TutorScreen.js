@@ -12,9 +12,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLanguage } from '../context/LanguageContext';
-import { translate as apiTranslate, fetchTTS } from '../services/api';
-import { useAudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { translate as apiTranslate } from '../services/api';
+import { speak as ttsSpeak, stopSpeaking } from '../services/tts';
 import { LEVELS } from '../data/vocabulary';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../theme';
 
@@ -31,38 +30,33 @@ export default function TutorScreen({ navigation }) {
   const [translatingWord, setTranslatingWord] = useState(null);
   const [playingId, setPlayingId] = useState(null);
 
-  const player = useAudioPlayer();
   const currentLevel = LEVELS.find((l) => l.id === selectedLevel);
 
   const translateWord = useCallback(async (word) => {
     const sourceText = lang === 'en' ? word.en : word.fr;
     const key = `${word.fr}_${word.en}`;
-    if (ghomalaCache[key]) return;
+    if (ghomalaCache[key] && ghomalaCache[key] !== '…') return;
     setTranslatingWord(key);
     try {
       const result = await apiTranslate(sourceText, lang === 'en' ? 'en' : 'fr', 'bbj');
-      setGhomalaCache((prev) => ({ ...prev, [key]: result.translation || '?' }));
-    } catch {
-      setGhomalaCache((prev) => ({ ...prev, [key]: '...' }));
+      const translation = result.translation?.trim();
+      setGhomalaCache((prev) => ({ ...prev, [key]: translation || '?' }));
+    } catch (err) {
+      console.warn('Translate error:', sourceText, err.message);
+      // Don't cache permanently — set temporary marker so user can retry
+      setGhomalaCache((prev) => ({ ...prev, [key]: '…' }));
     }
     setTranslatingWord(null);
   }, [lang, ghomalaCache]);
 
-  const playAudio = useCallback(async (text, ttsLang, id) => {
-    if (playingId === id) return;
-    setPlayingId(id);
-    try {
-      const result = await fetchTTS(text, ttsLang);
-      if (result.audio) {
-        const ext = (result.mime_type || '').includes('wav') ? 'wav' : 'mp3';
-        const fileUri = `${FileSystem.cacheDirectory}tts_tutor_${Date.now()}.${ext}`;
-        await FileSystem.writeAsStringAsync(fileUri, result.audio, { encoding: FileSystem.EncodingType.Base64 });
-        player.replace({ uri: fileUri });
-        player.play();
-      }
-    } catch (e) { console.warn('TTS:', e.message); }
-    setPlayingId(null);
-  }, [playingId, player]);
+  const playAudio = useCallback((text, ttsLang, id) => {
+    if (playingId === id) { stopSpeaking(); setPlayingId(null); return; }
+    ttsSpeak(text, ttsLang, {
+      onStart: () => setPlayingId(id),
+      onDone: () => setPlayingId(null),
+      onError: () => setPlayingId(null),
+    });
+  }, [playingId]);
 
   // Render a word card
   const renderWordCard = (word, topicId, idx) => {

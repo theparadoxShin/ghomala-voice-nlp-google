@@ -12,9 +12,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLanguage } from '../context/LanguageContext';
-import { sendChat, fetchTTS } from '../services/api';
-import { useAudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { sendChat } from '../services/api';
+import { speak as ttsSpeak, stopSpeaking } from '../services/tts';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../theme';
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -33,7 +32,6 @@ export default function DialogueScreen({ navigation, route }) {
   const [initialSent, setInitialSent] = useState(false);
 
   const flatListRef = useRef(null);
-  const player = useAudioPlayer();
 
   // Welcome message
   useEffect(() => {
@@ -82,24 +80,17 @@ export default function DialogueScreen({ navigation, route }) {
     setSending(false);
   }, [sending, sessionId, lang]);
 
-  // TTS playback
-  const handlePlayTTS = useCallback(async (msgId, text) => {
-    if (playingMsgId === msgId) { player.pause(); setPlayingMsgId(null); return; }
-    setPlayingMsgId(msgId);
-    try {
-      const hasGhomala = /[ɔɛəŋ]/.test(text);
-      const ttsLang = hasGhomala ? 'bbj' : (lang === 'en' ? 'en' : 'fr');
-      const result = await fetchTTS(text, ttsLang);
-      if (result.audio) {
-        const ext = (result.mime_type || '').includes('wav') ? 'wav' : 'mp3';
-        const fileUri = `${FileSystem.cacheDirectory}tts_${msgId}.${ext}`;
-        await FileSystem.writeAsStringAsync(fileUri, result.audio, { encoding: FileSystem.EncodingType.Base64 });
-        player.replace({ uri: fileUri });
-        player.play();
-      }
-    } catch (e) { console.warn('TTS error:', e.message); }
-    setPlayingMsgId(null);
-  }, [playingMsgId, player, lang]);
+  // TTS playback via Cloud TTS
+  const handlePlayTTS = useCallback((msgId, text) => {
+    if (playingMsgId === msgId) { stopSpeaking(); setPlayingMsgId(null); return; }
+    const hasGhomala = /[ɔɛəŋ]/.test(text);
+    const ttsLang = hasGhomala ? 'bbj' : (lang === 'en' ? 'en' : 'fr');
+    ttsSpeak(text, ttsLang, {
+      onStart: () => setPlayingMsgId(msgId),
+      onDone: () => setPlayingMsgId(null),
+      onError: () => setPlayingMsgId(null),
+    });
+  }, [playingMsgId, lang]);
 
   // Scroll to bottom
   useEffect(() => {

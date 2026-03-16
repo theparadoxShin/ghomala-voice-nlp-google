@@ -172,6 +172,85 @@ class TTSRequest(BaseModel):
 # ============================================================================
 # DICTIONARY-AUGMENTED GENERATION (for REST text endpoints)
 # ============================================================================
+
+def _load_dict_data():
+    """Load the raw dictionary list for direct lookups."""
+    from nam_sa_agent.agent import _load_dictionary
+    return _load_dictionary()
+
+
+def _extract_best_dict_translation(text: str, source_lang: str, target_lang: str) -> str | None:
+    """Find the best dictionary translation for a word/short phrase.
+    Returns the translated word directly, or None if no good match."""
+    import re
+    dictionary = _load_dict_data()
+    text_lower = text.lower().strip()
+
+    # Skip very long phrases (dictionary is word-level)
+    if len(text_lower.split()) > 4:
+        return None
+
+    if target_lang == "bbj":
+        # Source is fr or en → find matching french entry → return ghomala
+        scored = []
+        for entry in dictionary:
+            french = entry.get("french", "").lower().strip()
+            ghomala = entry.get("ghomala", "").strip()
+            if not ghomala or not french:
+                continue
+            # Skip entries where ghomala is itself a French word (bad entries)
+            if ghomala.lower() == french:
+                continue
+
+            # Score matches
+            first_def = french.split(",")[0].split("(")[0].strip().rstrip(".")
+            # Remove category prefixes like "Vt." "N." etc.
+            first_def_clean = re.sub(r'^(vt\.|vi\.|v\.|n\.|adj\.|adv\.)\s*', '', first_def).strip()
+
+            score = 0
+            if first_def_clean == text_lower:
+                score = 100  # Perfect match: "remercier" == "remercier"
+            elif first_def == text_lower:
+                score = 100
+            elif french == text_lower:
+                score = 95
+            elif french.startswith(text_lower + " ") or french.startswith(text_lower + "."):
+                score = 90
+            # Stem matching: "merci" matches "remercier", "remerciement"
+            elif text_lower in first_def_clean and len(text_lower) >= 3:
+                score = 70
+
+            if score > 0:
+                # Prefer verbs (Vt, Vi, V) for action words
+                cat = entry.get("category", "").strip().rstrip(".")
+                if cat in ("Vt", "Vi", "V"):
+                    score += 5
+                scored.append((score, ghomala, entry))
+
+        if scored:
+            scored.sort(key=lambda x: -x[0])
+            best_ghomala = scored[0][1]
+            # Clean subscript numbers (pîŋ₂ → pîŋ)
+            return re.sub(r'[₀₁₂₃₄₅₆₇₈₉]+$', '', best_ghomala)
+
+    elif source_lang == "bbj":
+        # Source is ghomala → find matching ghomala entry → return french
+        text_clean = re.sub(r'[₀₁₂₃₄₅₆₇₈₉]+$', '', text_lower)
+        for entry in dictionary:
+            ghomala = entry.get("ghomala", "").lower().strip()
+            ghomala_clean = re.sub(r'[₀₁₂₃₄₅₆₇₈₉]+$', '', ghomala)
+            if ghomala_clean == text_clean or ghomala == text_lower:
+                french = entry.get("french", "").strip()
+                if french:
+                    # Clean: remove "Vt." prefixes, take first definition
+                    french_clean = re.sub(r'^(Vt\.|Vi\.|V\.|N\.|Adj\.|Adv\.)\s*', '', french).strip()
+                    first = french_clean.split(".")[0].split(",")[0].strip()
+                    if first and first.lower() != ghomala_clean:
+                        return first
+
+    return None
+
+
 def _enrich_with_dictionary(user_message: str) -> str:
     """Look up key words in the Ghomala' dictionary and return context."""
     # Extract potential words to look up (strip common prefixes)
@@ -303,91 +382,353 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/translate")
 async def translate(request: TranslateRequest):
-    """Quick translation endpoint."""
+    """Quick translation endpoint — dictionary-first, model fallback."""
     lang_map = {"fr": "Français", "en": "Anglais", "bbj": "Ghomala'"}
     src = lang_map.get(request.source_lang, request.source_lang)
     tgt = lang_map.get(request.target_lang, request.target_lang)
 
+    # ── STEP 1: Try dictionary lookup first (ground truth) ──
+    dictionary = ghomala_dictionary_lookup(request.text.strip(), "translate")
+    if dictionary.get("status") == "success":
+        dict_translation = _extract_best_dict_translation(
+            request.text.strip(), request.source_lang, request.target_lang
+        )
+        if dict_translation:
+            return {
+                "original": request.text,
+                "translation": dict_translation,
+                "source_lang": request.source_lang,
+                "target_lang": request.target_lang,
+                "source": "dictionary",
+            }
+
+    # ── STEP 2: Fallback to model (for phrases/sentences not in dictionary) ──
     dict_context = _enrich_with_dictionary(request.text)
     prompt = f"Traduis de {src} vers {tgt}: {request.text}"
     if dict_context:
         prompt = f"{dict_context}\n\n{prompt}"
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_TUNED_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=500,
-                temperature=0.7,
-            ),
-        )
-        return {
-            "original": request.text,
-            "translation": response.text,
-            "source_lang": request.source_lang,
-            "target_lang": request.target_lang,
-        }
-    except Exception as e:
-        logger.error(f"Translate error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-# ============================================================================
-# TTS — Text-to-Speech using Gemini multimodal
-# ============================================================================
-@app.post("/api/tts")
-async def text_to_speech(request: TTSRequest):
-    """Generate speech audio from text using Gemini's audio generation.
-
-    Uses Gemini to produce natural speech with correct tonal pronunciation
-    for Ghomala', French, and English.
-    """
-    lang_label = {"fr": "French", "en": "English", "bbj": "Ghomala'"}.get(
-        request.language, "French"
+    translate_instruction = (
+        "Tu es un traducteur automatique Français-Anglais-Ghomala'. "
+        "RÈGLE ABSOLUE: Réponds UNIQUEMENT avec la traduction. "
+        "JAMAIS d'explication, JAMAIS de commentaire, JAMAIS de phrase comme "
+        "'je ne peux pas' ou 'le dictionnaire ne contient pas'. "
+        "Si tu ne connais pas la traduction exacte, donne ta meilleure approximation phonétique. "
+        "Réponds UNIQUEMENT avec les mots traduits, rien d'autre."
     )
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"Read this text aloud in {lang_label}. "
-                     f"Pronounce clearly with correct tones and intonation: "
-                     f"{request.text}",
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name="Kore",
-                        )
-                    )
+    # Retry with backoff for transient 429 errors
+    last_err = None
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                await asyncio.sleep(1.5 * attempt)
+            response = client.models.generate_content(
+                model=GEMINI_TUNED_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=translate_instruction,
+                    max_output_tokens=200,
+                    temperature=0.1,
                 ),
-            ),
+            )
+            result_text = response.text.strip()
+
+            # Clean model hallucinations — if response contains explanations, extract just the translation
+            for noise in [
+                "The provided dictionary", "Le dictionnaire", "Je ne peux pas",
+                "I cannot", "I don't have", "Il n'y a pas", "Malheureusement",
+                "Unfortunately", "Note:", "Remarque:",
+            ]:
+                if noise.lower() in result_text.lower():
+                    # Try to extract a Ghomala'-like word (with diacritics) from the noise
+                    import re
+                    ghomala_words = re.findall(r'[A-Za-zɔɛŋəʉÀ-ÿ\u0300-\u036f]+', result_text)
+                    # Filter for words with special chars typical of Ghomala'
+                    special = [w for w in ghomala_words if any(c in w for c in 'ɔɛŋəʉ') or len(w) > 2]
+                    if special:
+                        result_text = ' '.join(special[:5])
+                    else:
+                        result_text = "?"
+                    break
+
+            return {
+                "original": request.text,
+                "translation": result_text,
+                "source_lang": request.source_lang,
+                "target_lang": request.target_lang,
+                "source": "model",
+            }
+        except Exception as e:
+            last_err = e
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                logger.warning(f"Translate 429 (attempt {attempt+1}/3): {e}")
+                continue
+            logger.error(f"Translate error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    logger.error(f"Translate failed after 3 retries: {last_err}")
+    raise HTTPException(status_code=429, detail="Service busy, please retry")
+
+
+# ============================================================================
+# TTS — Text-to-Speech using Google Cloud TTS API
+# ============================================================================
+tts_client = None
+
+def _get_tts_client():
+    """Lazy-init Cloud TTS client."""
+    global tts_client
+    if tts_client is None:
+        from google.cloud import texttospeech
+        tts_client = texttospeech.TextToSpeechClient()
+    return tts_client
+
+
+# Chirp 3 HD voice mapping — multilingual, handles Unicode diacritics/tones
+CHIRP3_VOICES = {
+    "fr": ("fr-FR", "fr-FR-Chirp3-HD-Aoede"),
+    "en": ("en-US", "en-US-Chirp3-HD-Aoede"),
+    "bbj": ("fr-FR", "fr-FR-Chirp3-HD-Aoede"),  # Ghomala' → French Chirp3 (best for tonal diacritics)
+}
+
+
+def _build_tts_input(text: str, language: str):
+    """Build SSML or plain text input for TTS.
+    For Ghomala' (bbj), wraps in SSML with prosody hints for tonal pronunciation."""
+    from google.cloud import texttospeech
+
+    if language == "bbj":
+        # SSML with slow prosody for tonal language learning
+        ssml = (
+            '<speak>'
+            '<prosody rate="slow" pitch="+0st">'
+            f'{_escape_ssml(text)}'
+            '</prosody>'
+            '</speak>'
+        )
+        return texttospeech.SynthesisInput(ssml=ssml)
+    return texttospeech.SynthesisInput(text=text)
+
+
+def _escape_ssml(text: str) -> str:
+    """Escape XML special characters for SSML."""
+    return (text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+@app.post("/api/tts")
+async def text_to_speech(request: TTSRequest):
+    """Generate speech audio using Google Cloud TTS — Chirp 3 HD.
+
+    Uses Chirp 3 HD voices for superior multilingual pronunciation.
+    Handles Unicode diacritics and tonal markers for Ghomala'.
+    """
+    from google.cloud import texttospeech
+
+    lang_code, voice_name = CHIRP3_VOICES.get(request.language, CHIRP3_VOICES["fr"])
+
+    try:
+        tts = _get_tts_client()
+        synthesis_input = _build_tts_input(request.text, request.language)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=lang_code,
+            name=voice_name,
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+        )
+        response = tts.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
         )
 
-        # Extract audio data from the response
-        if (
-            response.candidates
-            and response.candidates[0].content
-            and response.candidates[0].content.parts
-        ):
-            for part in response.candidates[0].content.parts:
-                if part.inline_data and part.inline_data.data:
-                    audio_b64 = base64.b64encode(part.inline_data.data).decode("utf-8")
-                    return {
-                        "audio": audio_b64,
-                        "mime_type": part.inline_data.mime_type or "audio/wav",
-                        "text": request.text,
-                        "language": request.language,
-                    }
-
-        raise HTTPException(status_code=500, detail="No audio generated")
-
-    except HTTPException:
-        raise
+        audio_b64 = base64.b64encode(response.audio_content).decode("utf-8")
+        return {
+            "audio": audio_b64,
+            "mime_type": "audio/mp3",
+            "text": request.text,
+            "language": request.language,
+        }
     except Exception as e:
         logger.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# WEBSOCKET — Voice Conversation (Multimodal Gemini + Cloud TTS)
+# ============================================================================
+
+async def _handle_live_voice(websocket: WebSocket):
+    """Real-time voice conversation using multimodal Gemini + Cloud TTS.
+
+    Flow per turn:
+      1. Mobile sends recorded audio over WebSocket
+      2. Gemini Flash transcribes the audio
+      3. Tuned model generates a response (with dictionary enrichment)
+      4. Cloud TTS generates audio for the response
+      5. Transcript + audio sent back to mobile
+    """
+    await websocket.accept()
+    session_id = str(uuid.uuid4())
+    chat_history: list[dict] = []
+
+    logger.info(f"Live voice session started: {session_id}")
+
+    await websocket.send_json({
+        "type": "status",
+        "status": "ready",
+        "session_id": session_id,
+    })
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            logger.info(f"[{session_id[:8]}] Received message type: {msg.get('type')}, size: {len(data)} bytes")
+
+            if msg.get("type") == "audio":
+                audio_bytes = base64.b64decode(msg["data"])
+                mime_type = msg.get("mime_type", "audio/mp4")
+                logger.info(f"[{session_id[:8]}] Audio received: {len(audio_bytes)} bytes, mime: {mime_type}")
+
+                try:
+                    # ── Step 1: Transcribe audio ──
+                    logger.info(f"[{session_id[:8]}] Step 1: Transcribing audio...")
+                    transcribe_response = client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=[types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(inline_data=types.Blob(
+                                    data=audio_bytes, mime_type=mime_type,
+                                )),
+                                types.Part(text=(
+                                    "Transcris exactement ce que l'utilisateur dit "
+                                    "dans cet audio. Donne UNIQUEMENT la transcription, "
+                                    "rien d'autre. Pas de guillemets."
+                                )),
+                            ]
+                        )],
+                        config=types.GenerateContentConfig(
+                            max_output_tokens=200,
+                            temperature=0.1,
+                        ),
+                    )
+                    user_text = transcribe_response.text.strip().strip('"').strip("'")
+                    logger.info(f"[{session_id[:8]}] Transcription: '{user_text}'")
+
+                    if not user_text:
+                        logger.warning(f"[{session_id[:8]}] Empty transcription, skipping")
+                        await websocket.send_json({"type": "turn_complete"})
+                        continue
+
+                    # Send user transcript to mobile
+                    await websocket.send_json({
+                        "type": "user_transcript",
+                        "text": user_text,
+                    })
+                    chat_history.append({"role": "user", "text": user_text})
+
+                    # ── Step 2: Generate response with dictionary enrichment ──
+                    logger.info(f"[{session_id[:8]}] Step 2: Generating response...")
+                    dict_context = _enrich_with_dictionary(user_text)
+                    enriched = ""
+                    if dict_context:
+                        enriched = f"{dict_context}\n\n"
+                    enriched += user_text
+
+                    contents = []
+                    for h in chat_history[-8:]:
+                        contents.append(types.Content(
+                            role=h["role"],
+                            parts=[types.Part(text=h["text"])]
+                        ))
+                    # Replace last entry with enriched version
+                    if contents:
+                        contents[-1] = types.Content(
+                            role="user",
+                            parts=[types.Part(text=enriched)]
+                        )
+
+                    response = client.models.generate_content(
+                        model=GEMINI_TUNED_MODEL,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            max_output_tokens=500,
+                            temperature=0.7,
+                        ),
+                    )
+                    assistant_text = response.text.strip()
+                    logger.info(f"[{session_id[:8]}] Response: '{assistant_text[:100]}...'")
+
+                    # Send assistant response text
+                    await websocket.send_json({
+                        "type": "transcript",
+                        "text": assistant_text,
+                        "role": "assistant",
+                    })
+                    chat_history.append({"role": "model", "text": assistant_text})
+
+                    # ── Step 3: Generate TTS audio (Chirp 3 HD) ──
+                    logger.info(f"[{session_id[:8]}] Step 3: Generating TTS audio (Chirp 3 HD)...")
+                    try:
+                        from google.cloud import texttospeech as tts_lib
+                        tts = _get_tts_client()
+
+                        lang_code, voice_name = CHIRP3_VOICES["fr"]
+
+                        synthesis_input = tts_lib.SynthesisInput(text=assistant_text)
+                        voice = tts_lib.VoiceSelectionParams(
+                            language_code=lang_code, name=voice_name,
+                        )
+                        audio_config = tts_lib.AudioConfig(
+                            audio_encoding=tts_lib.AudioEncoding.MP3,
+                        )
+                        tts_response = tts.synthesize_speech(
+                            input=synthesis_input, voice=voice,
+                            audio_config=audio_config,
+                        )
+
+                        audio_b64 = base64.b64encode(
+                            tts_response.audio_content
+                        ).decode("utf-8")
+                        await websocket.send_json({
+                            "type": "audio_response",
+                            "data": audio_b64,
+                            "format": "mp3",
+                        })
+                        logger.info(f"[{session_id[:8]}] Audio response sent: {len(audio_b64)} chars b64")
+                    except Exception as tts_err:
+                        logger.warning(f"[{session_id[:8]}] TTS in live session: {tts_err}")
+
+                    await websocket.send_json({"type": "turn_complete"})
+                    logger.info(f"[{session_id[:8]}] Turn complete")
+
+                except Exception as e:
+                    logger.error(f"[{session_id[:8]}] Live voice processing error: {e}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(e),
+                    })
+                    await websocket.send_json({"type": "turn_complete"})
+
+            elif msg.get("type") == "config":
+                logger.info(f"[{session_id[:8]}] Config received: {msg}")
+                pass
+
+            elif msg.get("type") == "stop":
+                break
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        logger.info(f"Live voice session ended: {session_id}")
 
 
 # ============================================================================
@@ -519,8 +860,8 @@ async def voice_stream(websocket: WebSocket):
 
 @app.websocket("/ws/live")
 async def live_stream(websocket: WebSocket):
-    """Voice streaming endpoint (Gemini Live API alias)."""
-    await _handle_voice_stream(websocket)
+    """Voice conversation endpoint — multimodal Gemini + Cloud TTS."""
+    await _handle_live_voice(websocket)
 
 
 # ============================================================================

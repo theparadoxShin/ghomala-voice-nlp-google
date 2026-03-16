@@ -23,7 +23,7 @@ const { width: SCREEN_W } = Dimensions.get('window');
 
 const MODES = [
   { id: 'Dictionary', icon: 'book-outline', titleKey: 'translate', subKey: 'translateSub', color: Colors.sky },
-  { id: 'Dialogue', icon: 'chatbubbles-outline', titleKey: 'dialogue', subKey: 'dialogueSub', color: Colors.secondary },
+  { id: 'Dialogue', icon: 'mic-outline', titleKey: 'dialogue', subKey: 'dialogueSub', color: Colors.secondary },
   { id: 'Proverbs', icon: 'leaf-outline', titleKey: 'proverbs', subKey: 'proverbsSub', color: Colors.earth },
   { id: 'Tutor', icon: 'school-outline', titleKey: 'tutor', subKey: 'tutorSub', color: Colors.accent },
 ];
@@ -104,6 +104,14 @@ export default function HomeScreen({ navigation }) {
           </TouchableOpacity>
         </Animated.View>
         <Text style={styles.ctaText}>{t('tapToSpeak')}</Text>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Chat')}
+          style={styles.chatLink}
+          hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={16} color={Colors.textMuted} />
+          <Text style={styles.chatLinkText}>{t('chatMode')}</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -214,5 +222,16 @@ const styles = StyleSheet.create({
     ...Typography.h3,
     color: Colors.textPrimary,
     marginTop: Spacing.md,
+  },
+  chatLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: Spacing.sm,
+    paddingVertical: 6,
+  },
+  chatLinkText: {
+    ...Typography.caption,
+    color: Colors.textMuted,
   },
 });

@@ -11,7 +11,7 @@ const translations = {
     translate: 'Traduire',
     translateSub: 'Dictionnaire & Traduction',
     dialogue: 'Dialogue',
-    dialogueSub: 'Conversation Live',
+    dialogueSub: 'Conversation Live Audio',
     proverbs: 'Proverbes',
     proverbsSub: 'Sagesse Bamiléké',
     tutor: 'Tuteur',
@@ -66,6 +66,7 @@ const translations = {
     expressions: 'Expressions',
     culture: 'Culture',
     ceremonies: 'Cérémonies',
+    chatMode: 'Chat textuel →',
   },
   en: {
     appSubtitle: 'The sun has risen',
@@ -73,7 +74,7 @@ const translations = {
     translate: 'Translate',
     translateSub: 'Dictionary & Translation',
     dialogue: 'Dialogue',
-    dialogueSub: 'Live Conversation',
+    dialogueSub: 'Live Audio Conversation',
     proverbs: 'Proverbs',
     proverbsSub: 'Bamiléké Wisdom',
     tutor: 'Tutor',
@@ -128,6 +129,7 @@ const translations = {
     expressions: 'Expressions',
     culture: 'Culture',
     ceremonies: 'Ceremonies',
+    chatMode: 'Text chat →',
   },
 };
 

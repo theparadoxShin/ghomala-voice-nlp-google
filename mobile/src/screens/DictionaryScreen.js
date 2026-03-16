@@ -1,39 +1,37 @@
 /**
  * DictionaryScreen — NAM SA'
- * Google Translate-style interface: 2 text boxes, language swap, TTS.
+ * Google Translate-style interface: 2 text boxes, language picker modal, TTS via device Speech.
  */
 
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ActivityIndicator, Platform, KeyboardAvoidingView,
+  ActivityIndicator, Platform, KeyboardAvoidingView, Modal, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLanguage } from '../context/LanguageContext';
-import { translate as apiTranslate, fetchTTS } from '../services/api';
-import { useAudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { translate as apiTranslate } from '../services/api';
+import { speak as ttsSpeak, stopSpeaking } from '../services/tts';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../theme';
 
 const LANGUAGES = [
-  { code: 'fr', label: 'Français' },
-  { code: 'en', label: 'English' },
-  { code: 'bbj', label: "Ghomala'" },
+  { code: 'fr', label: 'Français', speech: 'fr-FR' },
+  { code: 'en', label: 'English', speech: 'en-US' },
+  { code: 'bbj', label: "Ghomala'", speech: 'fr-FR' },
 ];
 
 export default function DictionaryScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
 
   const [sourceLang, setSourceLang] = useState('fr');
   const [targetLang, setTargetLang] = useState('bbj');
   const [sourceText, setSourceText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [playingId, setPlayingId] = useState(null);
-
-  const player = useAudioPlayer();
+  const [speaking, setSpeaking] = useState(null); // 'src' | 'tgt' | null
+  const [pickerTarget, setPickerTarget] = useState(null); // 'source' | 'target' | null
 
   const handleSwap = () => {
     setSourceLang(targetLang);
@@ -42,15 +40,15 @@ export default function DictionaryScreen({ navigation }) {
     setTranslatedText(sourceText);
   };
 
-  const cycleLang = (current, other) => {
-    const codes = LANGUAGES.map((l) => l.code);
-    let idx = codes.indexOf(current);
-    let next;
-    do {
-      idx = (idx + 1) % codes.length;
-      next = codes[idx];
-    } while (next === other);
-    return next;
+  const selectLanguage = (code) => {
+    if (pickerTarget === 'source') {
+      if (code === targetLang) setTargetLang(sourceLang);
+      setSourceLang(code);
+    } else {
+      if (code === sourceLang) setSourceLang(targetLang);
+      setTargetLang(code);
+    }
+    setPickerTarget(null);
   };
 
   const handleTranslate = useCallback(async () => {
@@ -59,30 +57,24 @@ export default function DictionaryScreen({ navigation }) {
     try {
       const result = await apiTranslate(sourceText.trim(), sourceLang, targetLang);
       setTranslatedText(result.translation || '');
-    } catch {
-      setTranslatedText(t('error'));
+    } catch (err) {
+      console.warn('Translate error:', err.message);
+      setTranslatedText(
+        err.message?.includes('429')
+          ? (lang === 'en' ? 'Too many requests, please wait...' : 'Trop de requêtes, patientez...')
+          : t('error')
+      );
     }
     setLoading(false);
   }, [sourceText, sourceLang, targetLang, t]);
 
-  const playAudio = async (text, lang, id) => {
-    if (playingId === id) return;
-    setPlayingId(id);
-    try {
-      const result = await fetchTTS(text, lang);
-      if (result.audio) {
-        const ext = (result.mime_type || '').includes('wav') ? 'wav' : 'mp3';
-        const fileUri = `${FileSystem.cacheDirectory}tts_dict_${Date.now()}.${ext}`;
-        await FileSystem.writeAsStringAsync(fileUri, result.audio, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        player.replace({ uri: fileUri });
-        player.play();
-      }
-    } catch (e) {
-      console.warn('TTS failed:', e.message);
-    }
-    setPlayingId(null);
+  const speak = (text, langCode, id) => {
+    if (speaking) { stopSpeaking(); setSpeaking(null); return; }
+    ttsSpeak(text, langCode, {
+      onStart: () => setSpeaking(id),
+      onDone: () => setSpeaking(null),
+      onError: () => setSpeaking(null),
+    });
   };
 
   const getLangLabel = (code) => LANGUAGES.find((l) => l.code === code)?.label || code;
@@ -105,7 +97,7 @@ export default function DictionaryScreen({ navigation }) {
       <View style={styles.langRow}>
         <TouchableOpacity
           style={styles.langPill}
-          onPress={() => setSourceLang(cycleLang(sourceLang, targetLang))}
+          onPress={() => setPickerTarget('source')}
         >
           <Text style={styles.langPillText}>{getLangLabel(sourceLang)}</Text>
           <Ionicons name="chevron-down" size={14} color={Colors.textSecondary} />
@@ -117,7 +109,7 @@ export default function DictionaryScreen({ navigation }) {
 
         <TouchableOpacity
           style={styles.langPill}
-          onPress={() => setTargetLang(cycleLang(targetLang, sourceLang))}
+          onPress={() => setPickerTarget('target')}
         >
           <Text style={styles.langPillText}>{getLangLabel(targetLang)}</Text>
           <Ionicons name="chevron-down" size={14} color={Colors.textSecondary} />
@@ -144,21 +136,15 @@ export default function DictionaryScreen({ navigation }) {
         <View style={styles.textActions}>
           {sourceText.length > 0 && (
             <>
-              <TouchableOpacity
-                onPress={() => playAudio(sourceText, sourceLang, 'src')}
-                disabled={playingId === 'src'}
-              >
+              <TouchableOpacity onPress={() => speak(sourceText, sourceLang, 'src')}>
                 <Ionicons
-                  name={playingId === 'src' ? 'volume-high' : 'volume-medium-outline'}
+                  name={speaking === 'src' ? 'volume-high' : 'volume-medium-outline'}
                   size={22}
                   color={Colors.accent}
                 />
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => {
-                  setSourceText('');
-                  setTranslatedText('');
-                }}
+                onPress={() => { setSourceText(''); setTranslatedText(''); }}
               >
                 <Ionicons name="close-circle" size={22} color={Colors.textMuted} />
               </TouchableOpacity>
@@ -196,12 +182,9 @@ export default function DictionaryScreen({ navigation }) {
         </Text>
         {translatedText.length > 0 && (
           <View style={styles.textActions}>
-            <TouchableOpacity
-              onPress={() => playAudio(translatedText, targetLang, 'tgt')}
-              disabled={playingId === 'tgt'}
-            >
+            <TouchableOpacity onPress={() => speak(translatedText, targetLang, 'tgt')}>
               <Ionicons
-                name={playingId === 'tgt' ? 'volume-high' : 'volume-medium-outline'}
+                name={speaking === 'tgt' ? 'volume-high' : 'volume-medium-outline'}
                 size={24}
                 color={Colors.primary}
               />
@@ -212,6 +195,45 @@ export default function DictionaryScreen({ navigation }) {
 
       {/* Bottom padding */}
       <View style={{ height: insets.bottom + Spacing.md }} />
+
+      {/* Language Picker Modal */}
+      <Modal
+        visible={pickerTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPickerTarget(null)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setPickerTarget(null)}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {pickerTarget === 'source' ? t('from') : t('to')}
+            </Text>
+            {LANGUAGES.map((lang) => {
+              const isSelected =
+                pickerTarget === 'source'
+                  ? sourceLang === lang.code
+                  : targetLang === lang.code;
+              return (
+                <TouchableOpacity
+                  key={lang.code}
+                  style={[styles.modalOption, isSelected && styles.modalOptionActive]}
+                  onPress={() => selectLanguage(lang.code)}
+                >
+                  <Text style={[
+                    styles.modalOptionText,
+                    isSelected && styles.modalOptionTextActive,
+                  ]}>
+                    {lang.label}
+                  </Text>
+                  {isSelected && (
+                    <Ionicons name="checkmark" size={20} color={Colors.primary} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -268,4 +290,25 @@ const styles = StyleSheet.create({
   },
   translateBtnDisabled: { backgroundColor: Colors.stone },
   translateBtnText: { ...Typography.label, color: Colors.textOnPrimary },
+  // Modal
+  modalOverlay: {
+    flex: 1, backgroundColor: Colors.overlay,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: Colors.card, borderRadius: BorderRadius.xl,
+    padding: Spacing.lg, width: '75%', ...Shadows.lg,
+  },
+  modalTitle: {
+    ...Typography.h3, color: Colors.textPrimary,
+    textAlign: 'center', marginBottom: Spacing.md,
+  },
+  modalOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 14, paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md, marginBottom: Spacing.xs,
+  },
+  modalOptionActive: { backgroundColor: Colors.sand },
+  modalOptionText: { ...Typography.bodyLarge, color: Colors.textPrimary },
+  modalOptionTextActive: { color: Colors.primary, fontWeight: '600' },
 });

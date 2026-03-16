@@ -12,9 +12,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLanguage } from '../context/LanguageContext';
-import { translate as apiTranslate, fetchTTS } from '../services/api';
-import { useAudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { translate as apiTranslate } from '../services/api';
+import { speak as ttsSpeak, stopSpeaking } from '../services/tts';
 import { PROVERB_CATEGORIES } from '../data/proverbs';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../theme';
 
@@ -30,8 +29,6 @@ export default function ProverbsScreen({ navigation }) {
   const [translating, setTranslating] = useState(null);
   const [playingId, setPlayingId] = useState(null);
 
-  const player = useAudioPlayer();
-
   const currentCategory = PROVERB_CATEGORIES.find((c) => c.id === selectedCat);
 
   const translateToGhomala = useCallback(async (proverbId, text) => {
@@ -45,27 +42,20 @@ export default function ProverbsScreen({ navigation }) {
     setTranslating(null);
   }, [lang]);
 
-  const playAudio = useCallback(async (text, ttsLang, id) => {
-    if (playingId === id) return;
-    setPlayingId(id);
-    try {
-      const result = await fetchTTS(text, ttsLang);
-      if (result.audio) {
-        const ext = (result.mime_type || '').includes('wav') ? 'wav' : 'mp3';
-        const fileUri = `${FileSystem.cacheDirectory}tts_prov_${Date.now()}.${ext}`;
-        await FileSystem.writeAsStringAsync(fileUri, result.audio, { encoding: FileSystem.EncodingType.Base64 });
-        player.replace({ uri: fileUri });
-        player.play();
-      }
-    } catch (e) { console.warn('TTS:', e.message); }
-    setPlayingId(null);
-  }, [playingId, player]);
+  const playAudio = useCallback((text, ttsLang, id) => {
+    if (playingId === id) { stopSpeaking(); setPlayingId(null); return; }
+    ttsSpeak(text, ttsLang, {
+      onStart: () => setPlayingId(id),
+      onDone: () => setPlayingId(null),
+      onError: () => setPlayingId(null),
+    });
+  }, [playingId]);
 
   const askAboutProverb = useCallback((proverb) => {
     const question = lang === 'en'
       ? `Tell me more about this Bamiléké proverb and its cultural context: "${proverb.en}"`
       : `Parle-moi de ce proverbe Bamiléké et de son contexte culturel : "${proverb.fr}"`;
-    navigation.navigate('Dialogue', { initialMessage: question });
+    navigation.navigate('Chat', { initialMessage: question });
   }, [lang, navigation]);
 
   const renderProverb = ({ item }) => {
