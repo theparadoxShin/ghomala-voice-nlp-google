@@ -419,6 +419,17 @@ python 04_launch_fine_tuning.py --mode sft
 - **Requirements:** Gemini Live API or ADK, hosted on Google Cloud
 - **Automated Deployment:** `deploy.sh` + `cloudbuild.yaml` (Infrastructure-as-Code)
 
+### ☁️ Cloud Run Deployment Proof
+
+![Cloud Run Deployment 1](namsa_proof_google1.png)
+![Cloud Run Deployment 2](namsa_proof_google2.png)
+
+### 📲 Download the APK
+
+> **[Download NAM SA' APK (Android)](https://expo.dev/accounts/theparadoxe/projects/nam-sa/builds/780577a8-0bd9-42bc-86a8-12a9bcb2c815)**
+
+Install on any Android device to test the live voice agent.
+
 ## 🙏 Acknowledgments
 
 - **Masakhane** community for Ghomala' NLP datasets
