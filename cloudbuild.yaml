@@ -32,7 +32,10 @@ steps:
       - '--timeout'
       - '300'
       - '--set-env-vars'
-      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,GEMINI_TUNED_MODEL=projects/976647416990/locations/us-central1/endpoints/3643166357693923328'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,GEMINI_TUNED_MODEL=${_SFT_ENDPOINT}'
+
+substitutions:
+  _SFT_ENDPOINT: 'projects/${PROJECT_ID}/locations/us-central1/endpoints/YOUR_ENDPOINT_ID'
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/nam-sa-backend'

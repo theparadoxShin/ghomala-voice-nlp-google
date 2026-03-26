@@ -8,15 +8,35 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
+!.env.example
 venv/
 .venv/
 
-# Cloud credentials
+# Cloud credentials & secrets
 .gcloud/
+*.json.key
+*-credentials.json
+*service-account*.json
+*keyfile*.json
+gcloud-service-key.json
+client_secret*.json
+
+# Keystores & signing
+*.keystore
+*.jks
+*.pem
+*.p12
+*.pfx
 
 # Node/Mobile
 node_modules/
 .expo/
+
+# Build outputs
+*.apk
+*.aab
+*.ipa
 
 # OS
 .DS_Store
@@ -25,3 +45,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Temporary files
+*.tmp
+*.bak
+*_body.json
