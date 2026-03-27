@@ -419,6 +419,23 @@ python 04_launch_fine_tuning.py --mode sft
 - **Requirements:** Gemini Live API or ADK, hosted on Google Cloud
 - **Automated Deployment:** `deploy.sh` + `cloudbuild.yaml` (Infrastructure-as-Code)
 
+### ⚠️ Important Note for Judges — Cost & Testing
+
+> **The backend is live and ready to test.** All features work with the base Gemini model via Google AI Studio API key. This is the **cost-optimized** configuration.
+>
+> **SFT v2 (Fine-Tuned Model):**  
+> Our fine-tuned model (54,325 Ghomala' samples) was trained and validated on Vertex AI. However, Vertex AI SFT endpoints require a **dedicated GPU replica running 24/7** (~$36–48 USD/day), with **no scale-to-zero option** for fine-tuned models. To keep costs manageable, the SFT endpoint is currently **undeployed**.
+>
+> **What you can test right now (all working):**
+> - ✅ Live Voice conversation (Gemini Live API via ADK)  
+> - ✅ Text Chat (Gemini 2.5 Flash + dictionary augmentation)
+> - ✅ Translation (dictionary-first, model fallback)
+> - ✅ TTS pronunciation (Chirp 3 HD)
+> - ✅ Dictionary lookups (4,929 curated entries)
+> - ✅ Proverbs & cultural context
+>
+> **To re-enable the SFT fine-tuned model:** Contact us and we will redeploy the Vertex AI endpoint for your testing window. The SFT model provides significantly better Ghomala' accuracy for translations and cultural nuances.
+
 ### ☁️ Cloud Run Deployment Proof
 
 ![Cloud Run Deployment 1](namsa_proof_google1.png)
